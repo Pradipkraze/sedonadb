@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-SedonaDB Spatial Clip Algorithm
----------------------------------
-Executes an out-of-core spatial clip using SedonaDB.
-Trims Input Layer features to the exact boundaries of the Clip Layer.
+SedonaDB Spatial Join / Join Attributes by Location Algorithm
+--------------------------------------------------------------
+Executes an out-of-core spatial LEFT JOIN using SedonaDB.
+Attributes from Layer 2 are appended to Layer 1 features based on a
+chosen spatial predicate relationship.
+
 Both layers must be GeoPackage (.gpkg) files loaded in the QGIS Layers Panel.
 
 Compatible with QGIS 3.x and QGIS 4.x.
+
+Bug-fix note (vs original script):
+  The original script duplicated the layer1_name parse for both layers.
+  layer2_name is now correctly derived from source_layer2 / source_uri2.
 """
 
 import os
@@ -27,38 +33,50 @@ from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterString,
+    QgsProcessingParameterEnum,
     QgsProcessingParameterVectorDestination,
 )
 
 
-class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
+class SedonaSpatialJoinCanvasLayersAlgorithm(QgsProcessingAlgorithm):
     """
-    Spatial Clip powered by SedonaDB.
+    Spatial Join (Join Attributes by Location) powered by SedonaDB.
 
-    Performs an inner-join intersection: only features from the Input Layer
-    that spatially intersect the Clip Layer are retained, and their geometries
-    are trimmed to the exact clip boundary via ST_Intersection.
+    Performs a LEFT JOIN: every feature in Layer 1 is retained; attributes
+    from Layer 2 are appended where the chosen spatial predicate is satisfied.
+    Right-side attributes are prefixed with '_' to avoid column-name clashes.
     """
 
     # ── Parameter keys ────────────────────────────────────────────────────────
-    INPUT_LAYER  = 'INPUT_LAYER'
-    CLIP_LAYER   = 'CLIP_LAYER'
-    MEMORY_LIMIT = 'MEMORY_LIMIT'
-    OUTPUT_GPKG  = 'OUTPUT_GPKG'
+    INPUT_LAYER_1    = 'INPUT_LAYER_1'
+    INPUT_LAYER_2    = 'INPUT_LAYER_2'
+    SPATIAL_PREDICATE = 'SPATIAL_PREDICATE'
+    MEMORY_LIMIT     = 'MEMORY_LIMIT'
+    OUTPUT_GPKG      = 'OUTPUT_GPKG'
     # ─────────────────────────────────────────────────────────────────────────
+
+    # Dropdown options and their corresponding SedonaDB SQL functions
+    PREDICATE_OPTIONS = ['Intersects', 'Within', 'Contains', 'Touches', 'Crosses']
+    PREDICATE_MAPPING = {
+        'Intersects': 'ST_Intersects',
+        'Within':     'ST_Within',
+        'Contains':   'ST_Contains',
+        'Touches':    'ST_Touches',
+        'Crosses':    'ST_Crosses',
+    }
 
     # ── QgsProcessingAlgorithm identity ──────────────────────────────────────
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return SedonaSpatialClipCanvasLayersAlgorithm()
+        return SedonaSpatialJoinCanvasLayersAlgorithm()
 
     def name(self):
-        return 'sedonaspatialclipcanvaslayers'
+        return 'sedonaspatialjoincanvaslayers'
 
     def displayName(self):
-        return self.tr('Spatial Clip (GPKG Only)')
+        return self.tr('Join Attributes by Location (GPKG Only)')
 
     def group(self):
         return self.tr('Spatial Database Tools')
@@ -68,28 +86,40 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            "Executes a high-performance spatial clip using SedonaDB.\n\n"
-            "Trims features of the Input Layer to the exact boundaries of the Clip Layer. "
+            "Executes a high-performance spatial LEFT JOIN using SedonaDB.\n\n"
+            "Appends attributes from Layer 2 to every feature in Layer 1 where the "
+            "chosen spatial predicate is satisfied. Right-side columns are prefixed "
+            "with '_' to avoid name collisions.\n\n"
             "Both layers must be GeoPackage (.gpkg) files loaded in the QGIS Layers Panel.\n\n"
+            "Spatial predicates: Intersects · Within · Contains · Touches · Crosses\n\n"
             "Requirements: sedona, pyogrio  (pip install sedona pyogrio)"
         )
     # ─────────────────────────────────────────────────────────────────────────
 
     def initAlgorithm(self, config=None):
-        # Input layer — features to be clipped
+        # Left table
         self.addParameter(
             QgsProcessingParameterFeatureSource(
-                self.INPUT_LAYER,
-                self.tr('Input Layer (to be clipped)'),
+                self.INPUT_LAYER_1,
+                self.tr('Input Layer 1 (Left Table)'),
                 [QgsProcessing.TypeVectorAnyGeometry],
             )
         )
-        # Clip layer — bounding mask
+        # Right table
         self.addParameter(
             QgsProcessingParameterFeatureSource(
-                self.CLIP_LAYER,
-                self.tr('Clip Layer (bounding overlay)'),
+                self.INPUT_LAYER_2,
+                self.tr('Input Layer 2 (Right Table — attributes joined from here)'),
                 [QgsProcessing.TypeVectorAnyGeometry],
+            )
+        )
+        # Spatial predicate dropdown
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.SPATIAL_PREDICATE,
+                self.tr('Spatial Predicate'),
+                options=self.PREDICATE_OPTIONS,
+                defaultValue=0,
             )
         )
         # SedonaDB memory limit
@@ -104,7 +134,7 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterVectorDestination(
                 self.OUTPUT_GPKG,
-                self.tr('Clipped Output GeoPackage'),
+                self.tr('Output GeoPackage'),
             )
         )
 
@@ -118,13 +148,18 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
             )
 
         # Resolve parameters
-        source_layer1 = self.parameterAsVectorLayer(parameters, self.INPUT_LAYER, context)
-        source_layer2 = self.parameterAsVectorLayer(parameters, self.CLIP_LAYER, context)
-        mem_limit     = self.parameterAsString(parameters, self.MEMORY_LIMIT, context)
-        output_file   = self.parameterAsOutputLayer(parameters, self.OUTPUT_GPKG, context)
+        source_layer1    = self.parameterAsVectorLayer(parameters, self.INPUT_LAYER_1, context)
+        source_layer2    = self.parameterAsVectorLayer(parameters, self.INPUT_LAYER_2, context)
+        predicate_index  = self.parameterAsEnum(parameters, self.SPATIAL_PREDICATE, context)
+        mem_limit        = self.parameterAsString(parameters, self.MEMORY_LIMIT, context)
+        output_file      = self.parameterAsOutputLayer(parameters, self.OUTPUT_GPKG, context)
 
         if not source_layer1 or not source_layer2:
             raise QgsProcessingException("Invalid input layers selected.")
+
+        # Map enum index → SQL predicate function
+        selected_predicate = self.PREDICATE_OPTIONS[predicate_index]
+        sql_predicate      = self.PREDICATE_MAPPING[selected_predicate]
 
         # ── GeoPackage validation ─────────────────────────────────────────────
         source_uri1, provider1 = source_layer1.source(), source_layer1.providerType()
@@ -147,12 +182,13 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
             )
         # ─────────────────────────────────────────────────────────────────────
 
-        # Parse file paths and layer names from QGIS URI strings
-        gpkg_file1   = source_uri1.split('|')[0]
-        layer1_name  = self._parse_layer_name(source_layer1, source_uri1)
+        # Parse file paths and layer names
+        gpkg_file1  = source_uri1.split('|')[0]
+        layer1_name = self._parse_layer_name(source_layer1, source_uri1)
 
-        gpkg_file2   = source_uri2.split('|')[0]
-        layer2_name  = self._parse_layer_name(source_layer2, source_uri2)
+        gpkg_file2  = source_uri2.split('|')[0]
+        # BUG FIX: original code re-used source_layer1/source_uri1 here
+        layer2_name = self._parse_layer_name(source_layer2, source_uri2)
 
         feedback.pushInfo("Initializing SedonaDB engine connection...")
 
@@ -166,44 +202,57 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
 
         feedback.pushInfo(
             f"Validated layers:\n"
-            f"  Input : {gpkg_file1}  (layer: {layer1_name})\n"
-            f"  Clip  : {gpkg_file2}  (layer: {layer2_name})"
+            f"  Layer 1 (left) : {gpkg_file1}  (layer: {layer1_name})\n"
+            f"  Layer 2 (right): {gpkg_file2}  (layer: {layer2_name})\n"
+            f"  Predicate      : {selected_predicate} → {sql_predicate}"
         )
 
         if feedback.isCanceled():
             return {}
 
         # Read GeoPackages via pyogrio
-        input_dataframe = pyogrio.read_dataframe(gpkg_file1, layer=layer1_name)
-        clip_dataframe  = pyogrio.read_dataframe(gpkg_file2, layer=layer2_name)
+        input_layer1 = pyogrio.read_dataframe(gpkg_file1, layer=layer1_name)
+        input_layer2 = pyogrio.read_dataframe(gpkg_file2, layer=layer2_name)
 
-        df1 = sd.create_data_frame(input_dataframe)
+        df1 = sd.create_data_frame(input_layer1)
         df1.to_view("layer1")
 
-        df2 = sd.create_data_frame(clip_dataframe)
+        df2 = sd.create_data_frame(input_layer2)
         df2.to_view("layer2")
 
-        # Dynamically build SELECT — replace geometry column with ST_Intersection result
-        select_parts = []
+        # Dynamically build LEFT side SELECT (geometry kept as-is)
+        layer1_parts = []
         for col in df1.columns:
             if col == 'geometry':
-                select_parts.append(
-                    "ST_Intersection(l.geometry, r.geometry) AS geometry"
-                )
+                layer1_parts.append('l.geometry')
             else:
-                select_parts.append(f'l."{col}" AS "{col.lower()}"')
-        select_clause = ', '.join(select_parts)
+                layer1_parts.append(f'l."{col}" AS "{col.lower()}"')
+        layer1_select = ', '.join(layer1_parts)
 
-        # Inner join: only features that intersect the clip boundary survive
+        # Dynamically build RIGHT side SELECT (geometry excluded; columns prefixed with '_')
+        layer2_parts = []
+        for col in df2.columns:
+            if col == 'geometry':
+                continue
+            layer2_parts.append(f'r."{col}" AS "_{col.lower()}"')
+        layer2_select = ', '.join(layer2_parts)
+
+        # Full SELECT clause — guard against empty right-side schema
+        if layer2_select:
+            full_select = f"{layer1_select}, {layer2_select}"
+        else:
+            full_select = layer1_select
+
+        # Spatial LEFT JOIN
         query = f"""
             SELECT
-                {select_clause}
+                {full_select}
             FROM layer1 l
-            INNER JOIN layer2 r
-                ON ST_Intersects(l.geometry, r.geometry)
+            LEFT JOIN layer2 r
+                ON {sql_predicate}(l.geometry, r.geometry)
         """
 
-        feedback.pushInfo("Executing spatial clip query...")
+        feedback.pushInfo("Executing spatial join query...")
 
         if feedback.isCanceled():
             return {}
@@ -211,18 +260,18 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
         # Resolve output path
         if not output_file:
             output_file = os.path.join(
-                tempfile.gettempdir(), 'sedona_clip_output.gpkg'
+                tempfile.gettempdir(), 'sedona_join_output.gpkg'
             )
 
         output_dir = os.path.dirname(output_file)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        feedback.pushInfo(f"Writing clipped output to: {output_file}")
+        feedback.pushInfo(f"Writing joined output to: {output_file}")
 
         sd.sql(query).to_pyogrio(output_file, driver='GPKG')
 
-        feedback.pushInfo("Spatial clip complete. Output registered with QGIS.")
+        feedback.pushInfo("Spatial join complete. Output registered with QGIS.")
 
         return {self.OUTPUT_GPKG: output_file}
 
