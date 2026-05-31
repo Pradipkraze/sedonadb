@@ -17,9 +17,9 @@ about=SedonaDB Spatial Tools provides QGIS Processing algorithms that leverage S
     - sedona (pip install sedona)
     - pyogrio (pip install pyogrio)
 
-tracker=https://github.com/your-org/sedonadb-qgis/issues
-repository=https://github.com/your-org/sedonadb-qgis
-homepage=https://github.com/your-org/sedonadb-qgis
+tracker=https://github.com/Pradipkraze/sedonadb/issues
+repository=https://github.com/Pradipkraze/sedonadb
+homepage=https://github.com/Pradipkraze
 
 hasProcessingProvider=yes
 tags=sedona,spatial,clip,join,geopackage,gpkg,out-of-core,large data,database
