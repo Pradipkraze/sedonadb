@@ -1,5 +1,7 @@
-# -*- coding: utf-8 -*-
-"""
-SedonaDB algorithms package.
-Each module in this package contains one QgsProcessingAlgorithm subclass.
-"""
+"""SedonaDB algorithm subpackage."""
+
+__all__ = [
+    "clip",
+    "join_attribute_by_location",
+    "install_dependencies",
+]
