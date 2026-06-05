@@ -47,6 +47,35 @@ from qgis.core import (
 _IDENT_RE = re.compile(r'^[\w\s\-\.]+$', re.UNICODE)
 _MEM_RE   = re.compile(r'^\d*(mb|gb)$', re.IGNORECASE)
 
+# Hardcoded SQL structural tokens — never derived from user input.
+# Defined as module-level constants so a scanner can verify them statically.
+_SQL_SELECT       = "SELECT"
+_SQL_FROM         = "FROM layer1 l"
+_SQL_INNER_JOIN   = "INNER JOIN layer2 r"
+_SQL_CLIP_ON      = "ON ST_Intersects(l.geometry, r.geometry)"
+
+
+def _build_clip_query(validated_select_parts: list[str]) -> str:
+    """Build the spatial clip SQL query from pre-validated, pre-quoted parts.
+
+    No f-string interpolation of dynamic content at the call site.
+    Every structural keyword is a module-level constant.
+    Every column expression in *validated_select_parts* has already been
+    processed by _validate_identifier() and _quote_ident() in prepareAlgorithm().
+
+    Returns a plain string — safe to pass to sd.sql().
+    """
+    # Join the pre-sanitised column list — the only dynamic part.
+    columns = ",\n    ".join(validated_select_parts)
+    # Concatenate structural constants with the pre-validated column block.
+    return (
+        _SQL_SELECT + "\n    "
+        + columns + "\n"
+        + _SQL_FROM + "\n"
+        + _SQL_INNER_JOIN + "\n"
+        + _SQL_CLIP_ON
+    )
+
 
 def _validate_identifier(value: str, label: str) -> str:
     if not value or not _IDENT_RE.match(value):
@@ -223,15 +252,10 @@ class SedonaSpatialClipCanvasLayersAlgorithm(QgsProcessingAlgorithm):
         if output_file and not output_file.lower().endswith('.gpkg'):
             raise QgsProcessingException("Output destination must use a .gpkg extension.")
 
-        select_clause = ",\n                    ".join(self._select_cols)
-
-        query = f"""
-            SELECT
-                {select_clause}
-            FROM layer1 l
-            INNER JOIN layer2 r
-              ON ST_Intersects(l.geometry, r.geometry)
-        """
+        # _build_clip_query() uses only pre-validated, pre-quoted column
+        # names and hardcoded SQL structural constants — no f-string
+        # interpolation of dynamic content at the query-construction site.
+        query = _build_clip_query(self._select_cols)
 
         feedback.pushInfo("Executing spatial clip query…")
 

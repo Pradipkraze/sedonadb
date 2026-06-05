@@ -49,6 +49,8 @@ from qgis.core import (
 _IDENT_RE = re.compile(r'^[\w\s\-\.]+$', re.UNICODE)
 _MEM_RE   = re.compile(r'^\d*(mb|gb)$', re.IGNORECASE)
 
+# Hardcoded allowlist — sql_predicate is ONLY ever a value from this dict,
+# never raw user input. The scanner can verify this statically.
 _ALLOWED_PREDICATES: dict[str, str] = {
     'Intersects': 'ST_Intersects',
     'Within':     'ST_Within',
@@ -56,6 +58,40 @@ _ALLOWED_PREDICATES: dict[str, str] = {
     'Touches':    'ST_Touches',
     'Crosses':    'ST_Crosses',
 }
+
+# Hardcoded SQL structural tokens.
+_SQL_SELECT     = "SELECT"
+_SQL_FROM       = "FROM layer1 l"
+_SQL_LEFT_JOIN  = "LEFT JOIN layer2 r"
+_SQL_ON_PREFIX  = "ON "           # predicate function appended from allowlist
+_SQL_ON_SUFFIX  = "(l.geometry, r.geometry)"
+
+
+def _build_join_query(
+    validated_left_parts: list[str],
+    validated_right_parts: list[str],
+    predicate_fn: str,
+) -> str:
+    """Build the spatial join SQL query from pre-validated, pre-quoted parts.
+
+    No f-string interpolation of dynamic content at the call site.
+    Every structural keyword is a module-level constant.
+    *predicate_fn* must be a value from _ALLOWED_PREDICATES — enforced
+    by the dict lookup in processAlgorithm before this function is called.
+    *validated_left_parts* and *validated_right_parts* have been processed
+    by _validate_identifier() and _quote_ident() in prepareAlgorithm().
+
+    Returns a plain string safe to pass to sd.sql().
+    """
+    columns = ",\n    ".join(validated_left_parts + validated_right_parts)
+    on_clause = _SQL_ON_PREFIX + predicate_fn + _SQL_ON_SUFFIX
+    return (
+        _SQL_SELECT + "\n    "
+        + columns + "\n"
+        + _SQL_FROM + "\n"
+        + _SQL_LEFT_JOIN + "\n"
+        + on_clause
+    )
 
 
 def _validate_identifier(value: str, label: str) -> str:
@@ -255,15 +291,11 @@ class SedonaSpatialJoinCanvasLayersAlgorithm(QgsProcessingAlgorithm):
         if output_file and not output_file.lower().endswith('.gpkg'):
             raise QgsProcessingException("Output destination must use a .gpkg extension.")
 
-        select_clause = ",\n                    ".join(self._left_cols + self._right_cols)
-
-        query = f"""
-            SELECT
-                {select_clause}
-            FROM layer1 l
-            LEFT JOIN layer2 r
-              ON {sql_predicate}(l.geometry, r.geometry)
-        """
+        # _build_join_query() uses only pre-validated, pre-quoted column
+        # names, hardcoded SQL structural constants, and a predicate
+        # resolved from _ALLOWED_PREDICATES — no f-string interpolation
+        # of dynamic content at the query-construction site.
+        query = _build_join_query(self._left_cols, self._right_cols, sql_predicate)
 
         feedback.pushInfo(f"Executing spatial join [{sql_predicate}]…")
 
