@@ -2,28 +2,24 @@
 name=SedonaDB Spatial Tools
 qgisMinimumVersion=3.0
 qgisMaximumVersion=4.99
-description=High-performance out-of-core spatial operations powered by SedonaDB. Supports spatial clip, attribute join by location, and more.
+description=High-performance out-of-core spatial operations powered by SedonaDB. Includes Spatial Clip, Spatial Join (Join Attributes by Location), and a dependency installer.
 version=1.0.0
-author=Pradip
-email=mitvhari44@gmail.com
+author=PK
+email=
 
-about=SedonaDB Spatial Tools provides QGIS Processing algorithms that leverage SedonaDB for large-scale, out-of-core spatial operations. All tools operate on GeoPackage (.gpkg) layers loaded in the QGIS Layers Panel.
+about=SedonaDB Spatial Tools provides QGIS Processing algorithms that leverage SedonaDB for large-scale, out-of-core spatial operations. All tools operate on GeoPackage layers and stream results directly to disk. Includes: Spatial Clip, Spatial Join (Join Attributes by Location), and an OSGeo4W-based dependency installer for sedona and pyogrio.
 
-    Current tools:
-    - SedonaDB Spatial Clip (GPKG Only)
-    - SedonaDB Spatial Join / Join Attributes by Location (GPKG Only)
+tracker=
+repository=
+homepage=
 
-    Requirements:
-    - sedona (pip install sedona)
-    - pyogrio (pip install pyogrio)
+tags=sedona,spatial,clip,join,geopackage,out-of-core,large data
+category=Vector
+icon=icons/icon.png
 
-tracker=https://github.com/Pradipkraze/sedonadb/issues
-repository=https://github.com/Pradipkraze/sedonadb
-homepage=https://github.com/Pradipkraze
-
-hasProcessingProvider=yes
-tags=sedona,spatial,clip,join,geopackage,gpkg,out-of-core,large data,database
-icon=icon.png
 experimental=False
 deprecated=False
 server=False
+
+changelog=
+    1.0.0 - Initial release. Spatial Clip, Spatial Join, Dependency Installer.

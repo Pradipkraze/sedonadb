@@ -1,85 +1,66 @@
-# -*- coding: utf-8 -*-
 """
-SedonaDB Processing Provider
-------------------------------
-Registers all SedonaDB algorithms into the QGIS Processing Framework.
+SedonaDB Spatial Tools — provider.py
+Processing provider: registers all SedonaDB algorithms under one group.
 
-To add a new algorithm:
-  1. Create a new file under algorithms/
-  2. Import the class inside loadAlgorithms() below
-  3. Add an instance of it to the algorithms list
-
-Compatible with QGIS 3.x and QGIS 4.x.
+Algorithm imports use importlib with hardcoded absolute package names.
+Using __name__ to derive the package is unreliable on Windows when QGIS
+loads the module before the package is fully initialised.
 """
 
+import importlib
 import os
+
 from qgis.core import QgsProcessingProvider
+from qgis.PyQt.QtGui import QIcon
 
 
 class SedonaDBProvider(QgsProcessingProvider):
-    """
-    QGIS Processing Provider for SedonaDB spatial tools.
-    All algorithms appear under 'Spatial Database Tools' in the Processing Toolbox.
-    """
+    """Groups all SedonaDB Processing algorithms."""
 
-    def __init__(self):
-        super().__init__()
+    PROVIDER_ID = "sedonadb"
 
-    def id(self):
-        return 'sedonadb'
+    # ------------------------------------------------------------------
+    def id(self):  # noqa: A003
+        return self.PROVIDER_ID
 
     def name(self):
-        return 'SedonaDB Spatial Tools'
+        return "SedonaDB Spatial Tools"
 
-    def longName(self):
-        return 'SedonaDB — High-Performance Out-of-Core Spatial Operations'
-
-    def versionInfo(self):
-        return '1.0.0'
+    def longName(self):  # noqa: N802
+        return "SedonaDB Spatial Tools"
 
     def icon(self):
-        icon_path = os.path.join(os.path.dirname(__file__), 'icon.png')
-        if os.path.exists(icon_path):
-            from qgis.PyQt.QtGui import QIcon
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "icon.png")
+        if os.path.isfile(icon_path):
             return QIcon(icon_path)
         return super().icon()
 
-    def loadAlgorithms(self):
-        """
-        Register every algorithm this provider exposes.
-        Imports are local so a broken algorithm file cannot prevent the
-        provider (or other algorithms) from loading.
+    def loadAlgorithms(self):  # noqa: N802
+        """Register algorithms.  Each is wrapped so one broken algorithm
+        cannot prevent the others from loading."""
+        _safe_add(self, "sedonadb_plugin.algorithms.clip",
+                  "SedonaSpatialClipCanvasLayersAlgorithm")
+        _safe_add(self, "sedonadb_plugin.algorithms.join_attribute_by_location",
+                  "SedonaSpatialJoinCanvasLayersAlgorithm")
+        _safe_add(self, "sedonadb_plugin.algorithms.install_dependencies",
+                  "SedonaInstallDependenciesAlgorithm")
 
-        To add a new algorithm:
-          from .algorithms.my_tool import MyToolAlgorithm
-          algorithms.append(MyToolAlgorithm())
-        """
-        algorithms = []
+    def supportsNonFileBasedOutput(self):  # noqa: N802
+        return False
 
-        try:
-            from .algorithms.clip import SedonaSpatialClipCanvasLayersAlgorithm
-            algorithms.append(SedonaSpatialClipCanvasLayersAlgorithm())
-        except Exception as e:
-            import traceback
-            print(f"[SedonaDB] Could not load Clip algorithm: {e}\n{traceback.format_exc()}")
 
-        try:
-            from .algorithms.join_attribute_by_location import SedonaSpatialJoinCanvasLayersAlgorithm
-            algorithms.append(SedonaSpatialJoinCanvasLayersAlgorithm())
-        except Exception as e:
-            import traceback
-            print(f"[SedonaDB] Could not load Join algorithm: {e}\n{traceback.format_exc()}")
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
 
-        # ── Future algorithms ──────────────────────────────────────────────────
-        # try:
-        #     from .algorithms.dissolve import SedonaDissolveAlgorithm
-        #     algorithms.append(SedonaDissolveAlgorithm())
-        # except Exception as e:
-        #     print(f"[SedonaDB] Could not load Dissolve algorithm: {e}")
-        # ──────────────────────────────────────────────────────────────────────
-
-        for alg in algorithms:
-            self.addAlgorithm(alg)
-
-    def supportedOutputRasterLayerExtensions(self):
-        return []
+def _safe_add(provider: QgsProcessingProvider, module_abs: str, class_name: str):
+    """Import *class_name* from the absolute module path *module_abs* and
+    add an instance to *provider*.  Prints a traceback and skips on error."""
+    try:
+        module = importlib.import_module(module_abs)
+        cls = getattr(module, class_name)
+        provider.addAlgorithm(cls())
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"[SedonaDB] Could not load {class_name} from {module_abs}: {exc}")
